@@ -2,6 +2,7 @@
 #include <commdlg.h>
 #include <vector>
 #include <string>
+#include <cmath>
 
 // ---------------------------------------------------------------------------
 // Constantes privadas
@@ -15,11 +16,30 @@ constexpr UINT ID_BTN_BROWSE      = 0x3EB; // 1003 - boton "Browse"
 constexpr UINT ID_BTN_INJECT      = 0x3EC; // 1004 - boton "Inject"
 constexpr UINT ID_LISTBOX_STATUS  = 0x3ED; // 1005 - lista secundaria (estado)
 constexpr UINT ID_BTN_REFRESH     = 0x3EE; // 1006 - boton "Refresh"
-constexpr UINT ID_LABEL_MADE      = 0x3F0; // 1008 - pie de pagina "Made by Mtech08"
+constexpr UINT ID_LABEL_MADE      = 0x3F0; // 1008 - pie de pagina autor
+constexpr UINT ID_LABEL_TITLE     = 0x3F1; // 1009 - titulo del panel
+constexpr UINT ID_LABEL_PROCS     = 0x3F2; // 1010 - etiqueta "PROCESOS"
+constexpr UINT ID_LABEL_DLL       = 0x3F3; // 1011 - etiqueta "DLL"
+constexpr UINT ID_LABEL_STATUS    = 0x3F4; // 1012 - etiqueta "ESTADO"
 
-// Colores
-constexpr COLORREF TEXT_COLOR     = 0x00932693; // morado
-constexpr COLORREF BG_COLOR       = 0x00000000; // negro
+// Paleta estilo "Gengar / liquid crystal" (purpura oscuro + violeta neon)
+constexpr COLORREF COL_BG_TOP     = RGB(35, 8, 58);     // purpura muy oscuro
+constexpr COLORREF COL_BG_BOTTOM  = RGB(10, 1, 18);     // casi negro
+constexpr COLORREF COL_PANEL      = RGB(58, 18, 96);    // panel purpura translucido
+constexpr COLORREF COL_PANEL_HI   = RGB(105, 40, 165);  // panel hover
+constexpr COLORREF COL_EDGE       = RGB(150, 90, 224);  // borde cristal
+constexpr COLORREF COL_EDGE_HI    = RGB(180, 120, 255); // borde cristal glow
+constexpr COLORREF COL_TEXT_BG    = RGB(18, 5, 30);     // fondo de cajas de texto
+constexpr COLORREF COL_TEXT       = RGB(220, 190, 255); // texto violeta claro
+constexpr COLORREF COL_TEXT_TITLE = RGB(235, 195, 255); // titulo brillante
+constexpr COLORREF COL_ACCENT     = RGB(150, 70, 220);  // acento purpura
+constexpr COLORREF COL_NEON       = RGB(190, 120, 255); // glow neon
+constexpr COLORREF COL_LINE       = RGB(120, 60, 190);  // linea divisoria
+
+// Estado de hover de los botones (para el efecto cristal)
+LRESULT g_hoverBrowse  = 0;
+LRESULT g_hoverInject  = 0;
+LRESULT g_hoverRefresh = 0;
 
 } // namespace
 
@@ -36,12 +56,201 @@ HWND   g_listMain  = nullptr;
 HWND   g_listSmall = nullptr;
 HWND   g_editDll   = nullptr;
 HFONT  g_hFont     = nullptr;
-HBRUSH g_hBgBrush  = nullptr;        // pincel de fondo negro
+HFONT  g_hTitleFont = nullptr;
+HFONT  g_hSectionFont = nullptr;
+HBRUSH g_hBgBrush  = nullptr;        // pincel de fondo principal
+HBRUSH g_hFieldBrush = nullptr;      // pincel de fondo de los campos
 
 // ---------------------------------------------------------------------------
 // Procedimiento de ventana
 // ---------------------------------------------------------------------------
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+// ---------------------------------------------------------------------------
+// Pinta un gradiente vertical de color en un rectangulo.
+// ---------------------------------------------------------------------------
+void PaintGradient(HDC hdc, const RECT& rc, COLORREF top, COLORREF bottom)
+{
+    int h = rc.bottom - rc.top;
+    for (int y = 0; y < h; y++) {
+        double t = h > 1 ? (double)y / (h - 1) : 0.0;
+        int r = (int)(GetRValue(top) + (GetRValue(bottom) - GetRValue(top)) * t);
+        int g = (int)(GetGValue(top) + (GetGValue(bottom) - GetGValue(top)) * t);
+        int b = (int)(GetBValue(top) + (GetBValue(bottom) - GetBValue(top)) * t);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(r, g, b));
+        HPEN old = (HPEN)SelectObject(hdc, pen);
+        MoveToEx(hdc, rc.left, rc.top + y, nullptr);
+        LineTo(hdc, rc.right, rc.top + y);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dibuja un panel con esquinas redondeadas relleno.
+// ---------------------------------------------------------------------------
+void FillRoundRect(HDC hdc, int x, int y, int w, int h, int cx, int cy, COLORREF color)
+{
+    HBRUSH br = CreateSolidBrush(color);
+    HBRUSH old = (HBRUSH)SelectObject(hdc, br);
+    RoundRect(hdc, x, y, x + w, y + h, cx, cy);
+    SelectObject(hdc, old);
+    DeleteObject(br);
+}
+
+// ---------------------------------------------------------------------------
+// Dibuja el borde cristalino de un control redondeado (con brillo).
+// ---------------------------------------------------------------------------
+void FrameRoundRect(HDC hdc, int x, int y, int w, int h, int cx, int cy, COLORREF edge)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, edge);
+    HPEN old = (HPEN)SelectObject(hdc, pen);
+    HBRUSH nullbr = (HBRUSH)GetStockObject(NULL_BRUSH);
+    HBRUSH oldbr = (HBRUSH)SelectObject(hdc, nullbr);
+    RoundRect(hdc, x, y, x + w, y + h, cx, cy);
+    SelectObject(hdc, old);
+    SelectObject(hdc, oldbr);
+    DeleteObject(pen);
+}
+
+// ---------------------------------------------------------------------------
+// Dibuja una linea horizontal de acento degradada (para separar secciones).
+// ---------------------------------------------------------------------------
+void DrawAccentLine(HDC hdc, int x, int y, int w)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, COL_LINE);
+    HPEN old = (HPEN)SelectObject(hdc, pen);
+    MoveToEx(hdc, x, y, nullptr);
+    LineTo(hdc, x + w, y);
+    SelectObject(hdc, old);
+    DeleteObject(pen);
+
+    // reflejo mas tenue debajo
+    HPEN pen2 = CreatePen(PS_SOLID, 1, RGB(80, 40, 130));
+    SelectObject(hdc, pen2);
+    MoveToEx(hdc, x, y + 3, nullptr);
+    LineTo(hdc, x + w / 2, y + 3);
+    SelectObject(hdc, old);
+    DeleteObject(pen2);
+}
+
+// ---------------------------------------------------------------------------
+// Dibuja un boton con efecto "cristal liquido" (relleno gradiente + glow).
+// ---------------------------------------------------------------------------
+void DrawCrystalButton(HDC hdc, const RECT& rc, const wchar_t* text, bool hover)
+{
+    // relleno del boton: gradiente (hover mas claro)
+    RECT rr = rc;
+    PaintGradient(hdc, rr, hover ? COL_ACCENT : COL_PANEL,
+                  hover ? COL_PANEL_HI : COL_BG_BOTTOM);
+    // halo exterior ténue (efecto glow)
+    FrameRoundRect(hdc, rc.left - 2, rc.top - 2, rc.right - rc.left + 4,
+                   rc.bottom - rc.top + 4, 10, 10,
+                   hover ? RGB(110, 60, 170) : RGB(60, 28, 100));
+    // borde cristal brillante
+    FrameRoundRect(hdc, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+                   8, 8, hover ? COL_EDGE_HI : COL_EDGE);
+    // texto centrado
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, hover ? RGB(255, 255, 255) : COL_TEXT_TITLE);
+    RECT tr = rc;
+    DrawTextW(hdc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+// ---------------------------------------------------------------------------
+// Subclase: pinta un borde cristalino (purpura) alrededor de un control.
+// ---------------------------------------------------------------------------
+LRESULT CALLBACK CrystalFieldProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    // Guarda el procedimiento original en la pila de la ventana.
+    auto orig = (WNDPROC)GetPropW(hwnd, L"ORIGPROC");
+
+    switch (msg)
+    {
+    case WM_NCPAINT:
+    {
+        LRESULT res = CallWindowProcW(orig, hwnd, msg, wParam, lParam);
+
+        HDC hdc = GetWindowDC(hwnd);
+        RECT wrc;
+        GetWindowRect(hwnd, &wrc);
+        LONG bw = wrc.right - wrc.left;
+        LONG bh = wrc.bottom - wrc.top;
+        RECT f = { 1, 1, bw - 1, bh - 1 };
+        FrameRoundRect(hdc, f.left, f.top, f.right - f.left, f.bottom - f.top, 10, 10, COL_EDGE);
+        ReleaseDC(hwnd, hdc);
+        return res;
+    }
+    case WM_NCDESTROY:
+        RemovePropW(hwnd, L"ORIGPROC");
+        break;
+    }
+    return CallWindowProcW(orig, hwnd, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
+// Aplica la subclase cristalina a un control.
+// ---------------------------------------------------------------------------
+void MakeCrystalField(HWND hwnd)
+{
+    if (!hwnd) return;
+    WNDPROC orig = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                              (LONG_PTR)CrystalFieldProc);
+    SetPropW(hwnd, L"ORIGPROC", (HANDLE)orig);
+}
+
+// ---------------------------------------------------------------------------
+// Subclase de botones: rastrea el hover para el efecto cristal.
+// ---------------------------------------------------------------------------
+LRESULT CALLBACK CrystalButtonProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    auto orig = (WNDPROC)GetPropW(hwnd, L"ORIGPROC");
+
+    switch (msg)
+    {
+    case WM_MOUSEMOVE:
+    {
+        LRESULT res = CallWindowProcW(orig, hwnd, msg, wParam, lParam);
+        LRESULT* flag = (LRESULT*)GetPropW(hwnd, L"HOVERFLAG");
+        if (flag && !*flag) {
+            *flag = 1;
+            InvalidateRect(hwnd, nullptr, TRUE);
+        }
+        TRACKMOUSEEVENT tme{};
+        tme.cbSize    = sizeof(tme);
+        tme.dwFlags   = TME_LEAVE;
+        tme.hwndTrack = hwnd;
+        TrackMouseEvent(&tme);
+        return res;
+    }
+    case WM_MOUSELEAVE:
+    {
+        LRESULT* flag = (LRESULT*)GetPropW(hwnd, L"HOVERFLAG");
+        if (flag && *flag) {
+            *flag = 0;
+            InvalidateRect(hwnd, nullptr, TRUE);
+        }
+        return 0;
+    }
+    case WM_NCDESTROY:
+        RemovePropW(hwnd, L"ORIGPROC");
+        RemovePropW(hwnd, L"HOVERFLAG");
+        break;
+    }
+    return CallWindowProcW(orig, hwnd, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
+// Aplica la subclase de hover a un boton.
+// ---------------------------------------------------------------------------
+void MakeCrystalButton(HWND hwnd, LRESULT* hoverFlag)
+{
+    if (!hwnd) return;
+    SetPropW(hwnd, L"HOVERFLAG", (HANDLE)hoverFlag);
+    WNDPROC orig = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                              (LONG_PTR)CrystalButtonProc);
+    SetPropW(hwnd, L"ORIGPROC", (HANDLE)orig);
+}
 
 // ---------------------------------------------------------------------------
 // Muestra un error de Win32 en un MessageBox (GetLastError + FormatMessageW).
@@ -92,16 +301,10 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 }
 
 // ---------------------------------------------------------------------------
-// Inyecta una DLL en un proceso remoto:
-//   OpenProcess -> VirtualAllocEx -> WriteProcessMemory(ruta) ->
-//   WriteProcessMemory(L"\0") -> GetModuleHandleW("kernel32.dll") ->
-//   GetProcAddress("LoadLibraryW") -> CreateRemoteThread ->
-//   WaitForSingleObject -> VirtualFreeEx + CloseHandle.
-// Devuelve true si tiene exito.
+// Inyecta una DLL en un proceso remoto
 // ---------------------------------------------------------------------------
 bool InjectDll(DWORD pid, const char* dllPath)
 {
-    // Convierte la ruta multibyte que llega como argumento a UTF-16.
     int wlen = MultiByteToWideChar(CP_ACP, 0, dllPath, -1, nullptr, 0);
     std::wstring wpath;
     if (wlen > 0) {
@@ -110,10 +313,7 @@ bool InjectDll(DWORD pid, const char* dllPath)
     }
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProcess) {
-        ShowErrorMessage(L"OpenProcess failed");
-        return false;
-    }
+    if (!hProcess) { ShowErrorMessage(L"OpenProcess failed"); return false; }
 
     size_t bytes = wpath.size() * sizeof(wchar_t);
     LPVOID remote = VirtualAllocEx(hProcess, nullptr, bytes + 2, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -131,7 +331,6 @@ bool InjectDll(DWORD pid, const char* dllPath)
         return false;
     }
 
-    // Terminador nulo (2 bytes) justo despues del texto.
     wchar_t nul = L'\0';
     WriteProcessMemory(hProcess, (char*)remote + bytes, &nul, sizeof(nul), nullptr);
 
@@ -163,7 +362,6 @@ bool InjectDll(DWORD pid, const char* dllPath)
 
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread);
-
     VirtualFreeEx(hProcess, remote, 0, MEM_RELEASE);
     CloseHandle(hProcess);
     return true;
@@ -180,86 +378,173 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         g_hMain = hWnd;
 
-        g_hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+        g_hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, 0, 0, 0,
                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                               CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                              DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
-        g_hBgBrush = CreateSolidBrush(BG_COLOR);
+                              DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        g_hTitleFont = CreateFontW(22, 0, 0, 0, FW_BOLD, 0, 0, 0,
+                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                   CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                                   DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        g_hSectionFont = CreateFontW(13, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0,
+                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                     CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        g_hBgBrush = CreateSolidBrush(COL_BG_TOP);
+        g_hFieldBrush = CreateSolidBrush(COL_TEXT_BG);
         HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hWnd, GWLP_HINSTANCE));
 
-        // Lista de procesos (ID 1001) en (10,10) tamano 250x250.
+        // Titulo de la app
+        HWND hTitle = CreateWindowExW(
+            0, L"STATIC", L"TechInyector",
+            WS_CHILD | WS_VISIBLE,
+            14, 12, 220, 30, hWnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_TITLE)), hInst, nullptr);
+        if (hTitle) SendMessageW(hTitle, WM_SETFONT, (WPARAM)g_hTitleFont, TRUE);
+
+        // Seccion PROCESOS
+        HWND hProcLabel = CreateWindowExW(
+            0, L"STATIC", L"PROCESOS",
+            WS_CHILD | WS_VISIBLE,
+            14, 52, 240, 18, hWnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_PROCS)), hInst, nullptr);
+        if (hProcLabel) SendMessageW(hProcLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
+
+        // Lista de procesos
         g_listMain = CreateWindowExW(
             0, L"LISTBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_EXTENDEDSEL,
-            10, 10, 250, 250, hWnd,
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_EXTENDEDSEL | LBS_NOINTEGRALHEIGHT,
+            12, 72, 240, 205, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LISTBOX_MAIN)), hInst, nullptr);
         if (!g_listMain) ShowErrorMessage(L"CreateWindowExW (ListBox) failed");
         if (g_listMain) SendMessageW(g_listMain, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+        MakeCrystalField(g_listMain);
 
-        // Cuadro de ruta de la DLL (ID 1002) en (270,10) tamano 250x25.
+        // Seccion DLL
+        HWND hDllLabel = CreateWindowExW(
+            0, L"STATIC", L"DLL A INYECTAR",
+            WS_CHILD | WS_VISIBLE,
+            262, 52, 250, 18, hWnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_DLL)), hInst, nullptr);
+        if (hDllLabel) SendMessageW(hDllLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
+
+        // Cuadro de ruta de la DLL
         g_editDll = CreateWindowExW(
             0, L"EDIT", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            270, 10, 250, 25, hWnd,
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+            262, 72, 360, 30, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_EDIT_DLLPATH)), hInst, nullptr);
         if (!g_editDll) ShowErrorMessage(L"CreateWindowExW (Edit) failed");
         if (g_editDll) SendMessageW(g_editDll, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+        MakeCrystalField(g_editDll);
 
-        // Boton "Browse" (ID 1003) en (530,10) tamano 80x25.
-        CreateWindowExW(
-            0, L"BUTTON", L"Browse",
-            WS_CHILD | WS_VISIBLE,
-            530, 10, 80, 25, hWnd,
+        // Botones Browse / Inject en la misma fila
+        HWND hBrowse = CreateWindowExW(
+            0, L"BUTTON", L"Browse DLL",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            262, 112, 176, 34, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_BROWSE)), hInst, nullptr);
+        MakeCrystalButton(hBrowse, &g_hoverBrowse);
 
-        // Boton "Inject" (ID 1004) en (270,45) tamano 100x25.
-        CreateWindowExW(
+        HWND hInject = CreateWindowExW(
             0, L"BUTTON", L"Inject",
-            WS_CHILD | WS_VISIBLE,
-            270, 45, 100, 25, hWnd,
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            446, 112, 176, 34, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_INJECT)), hInst, nullptr);
+        MakeCrystalButton(hInject, &g_hoverInject);
 
-        // Boton "Refresh" (ID 1006) en (380,45) tamano 100x25.
-        CreateWindowExW(
-            0, L"BUTTON", L"Refresh",
-            WS_CHILD | WS_VISIBLE,
-            380, 45, 100, 25, hWnd,
+        // Boton Refresh debajo
+        HWND hRefresh = CreateWindowExW(
+            0, L"BUTTON", L"Refresh Procesos",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            262, 156, 360, 34, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_REFRESH)), hInst, nullptr);
+        MakeCrystalButton(hRefresh, &g_hoverRefresh);
 
-        // Lista secundaria (ID 1005), sin contenido visible.
+        // Seccion ESTADO
+        HWND hStatusLabel = CreateWindowExW(
+            0, L"STATIC", L"ESTADO",
+            WS_CHILD | WS_VISIBLE,
+            14, 282, 240, 18, hWnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_STATUS)), hInst, nullptr);
+        if (hStatusLabel) SendMessageW(hStatusLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
+
+        // Lista de estado
         g_listSmall = CreateWindowExW(
             0, L"LISTBOX", nullptr,
-            WS_CHILD | WS_BORDER,
-            470, 290, 150, 20, hWnd,
+            WS_CHILD | WS_VISIBLE | LBS_NOINTEGRALHEIGHT,
+            12, 302, 610, 46, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LISTBOX_STATUS)), hInst, nullptr);
+        MakeCrystalField(g_listSmall);
 
-        // Pie de pagina "Made by Mtech08" abajo a la derecha.
-        HWND hMadeLabel = CreateWindowExW(
-            0, L"STATIC", L"Made by Mtech08",
-            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_RIGHT,
-            460, 285, 170, 20, hWnd,
+        // Pie de pagina
+        HWND hMade = CreateWindowExW(
+            0, L"STATIC", L"TechInyector  |  Made by Mtech08",
+            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+            12, 352, 610, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_MADE)), hInst, nullptr);
-        if (hMadeLabel) SendMessageW(hMadeLabel, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+        if (hMade) SendMessageW(hMade, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
         return 0;
     }
 
+    case WM_ERASEBKGND:
+    {
+        // Fondo con gradiente tipo liquid crystal.
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        PaintGradient(hdc, rc, COL_BG_TOP, COL_BG_BOTTOM);
+        // Linea divisoria de acento bajo el titulo.
+        DrawAccentLine(hdc, 14, 44, 606);
+        return 1;
+    }
+
     case WM_CTLCOLORSTATIC:
-    case WM_CTLCOLORLISTBOX:
     {
         HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(hdc, TEXT_COLOR);
-        SetBkColor(hdc, BG_COLOR);
-
         UINT id = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
-        if (id == ID_LISTBOX_MAIN) {
-            SetBkMode(hdc, TRANSPARENT);
-            return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+        if (id == ID_LABEL_TITLE) {
+            // Titulo: violeta brillante.
+            SetTextColor(hdc, COL_TEXT_TITLE);
+        } else if (id == ID_LABEL_PROCS || id == ID_LABEL_DLL || id == ID_LABEL_STATUS) {
+            // Etiquetas de seccion: neon.
+            SetTextColor(hdc, COL_NEON);
+        } else if (id == ID_LABEL_MADE) {
+            // Pie de pagina: violeta tenue.
+            SetTextColor(hdc, RGB(150, 120, 190));
+        } else {
+            SetTextColor(hdc, COL_TEXT);
         }
-        // Demas controles (cuadro de texto, etiquetas, botones):
-        // texto morado sobre fondo negro.
         SetBkMode(hdc, TRANSPARENT);
-        return reinterpret_cast<LRESULT>(g_hBgBrush ? g_hBgBrush : GetStockObject(BLACK_BRUSH));
+        return reinterpret_cast<LRESULT>(g_hBgBrush);
+    }
+    case WM_CTLCOLORLISTBOX:
+    case WM_CTLCOLOREDIT:
+    {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(hdc, COL_TEXT);
+        SetBkColor(hdc, COL_TEXT_BG);
+        SetBkMode(hdc, TRANSPARENT);
+        return reinterpret_cast<LRESULT>(g_hFieldBrush ? g_hFieldBrush : g_hBgBrush);
+    }
+
+    case WM_DRAWITEM:
+    {
+        DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (dis->CtlType == ODT_BUTTON) {
+            bool hover = false;
+            UINT id = ID_BTN_BROWSE;
+            if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_BROWSE))      id = ID_BTN_BROWSE, hover = g_hoverBrowse;
+            else if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_INJECT)) id = ID_BTN_INJECT, hover = g_hoverInject;
+            else if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_REFRESH))id = ID_BTN_REFRESH, hover = g_hoverRefresh;
+
+            wchar_t label[64];
+            GetWindowTextW(dis->hwndItem, label, 64);
+            DrawCrystalButton(dis->hDC, dis->rcItem, label, hover);
+            return TRUE;
+        }
+        break;
     }
 
     case WM_COMMAND:
@@ -267,8 +552,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         WORD id = LOWORD(wParam);
         WORD code = HIWORD(wParam);
 
-        // Fuerza seleccion unica en la lista de procesos: al marcar uno,
-        // deselecciona el resto y solo deja marcado el elegido.
         if (id == ID_LISTBOX_MAIN && code == LBN_SELCHANGE) {
             const int count = static_cast<int>(SendMessageW(g_listMain, LB_GETCOUNT, 0, 0));
             int selCount = static_cast<int>(SendMessageW(g_listMain, LB_GETSELCOUNT, 0, 0));
@@ -294,7 +577,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ofn.lpstrFile         = fileBuf;
             ofn.nMaxFile          = 0x104;
             ofn.Flags             = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
             if (GetOpenFileNameW(&ofn)) {
                 SetWindowTextW(g_editDll, ofn.lpstrFile);
             }
@@ -305,29 +587,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             LRESULT sel = SendMessageW(g_listMain, LB_GETCARETINDEX, 0, 0);
             if (sel == LB_ERR || sel < 0) {
-                MessageBoxW(hWnd, L"Please select an application.",
-                            L"Warning", MB_ICONWARNING);
+                MessageBoxW(hWnd, L"Selecciona una aplicacion.", L"Aviso", MB_ICONWARNING);
                 return 0;
             }
             DWORD pid = static_cast<DWORD>(SendMessageW(g_listMain, LB_GETITEMDATA, sel, 0));
             if (pid == 0) {
-                MessageBoxW(hWnd, L"Please select an application.",
-                            L"Warning", MB_ICONWARNING);
+                MessageBoxW(hWnd, L"Selecciona una aplicacion.", L"Aviso", MB_ICONWARNING);
                 return 0;
             }
 
             wchar_t dllPath[0x104];
             GetWindowTextW(g_editDll, dllPath, 0x104);
             if (dllPath[0] == L'\0') {
-                MessageBoxW(hWnd, L"Please select a DLL file.",
-                            L"Warning", MB_ICONWARNING);
+                MessageBoxW(hWnd, L"Selecciona un archivo DLL.", L"Aviso", MB_ICONWARNING);
                 return 0;
             }
 
-            // Convierte de wide a narrow e inyecta.
             char bufN[0x104];
             WideCharToMultiByte(CP_ACP, 0, dllPath, -1, bufN, 0x104, nullptr, nullptr);
-            InjectDll(pid, bufN);
+            if (InjectDll(pid, bufN)) {
+                SendMessageW(g_listSmall, LB_ADDSTRING, 0, (LPARAM)L"Inyeccion realizada con exito.");
+            } else {
+                SendMessageW(g_listSmall, LB_ADDSTRING, 0, (LPARAM)L"La inyeccion fallo. Revisa permisos y ruta.");
+            }
             return 0;
         }
 
@@ -350,6 +632,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_DESTROY:
         if (g_hBgBrush) { DeleteObject(g_hBgBrush); g_hBgBrush = nullptr; }
+        if (g_hFieldBrush) { DeleteObject(g_hFieldBrush); g_hFieldBrush = nullptr; }
+        if (g_hFont) { DeleteObject(g_hFont); g_hFont = nullptr; }
+        if (g_hTitleFont) { DeleteObject(g_hTitleFont); g_hTitleFont = nullptr; }
+        if (g_hSectionFont) { DeleteObject(g_hSectionFont); g_hSectionFont = nullptr; }
         PostQuitMessage(0);
         return 0;
     }
@@ -369,7 +655,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     wc.hInstance     = hInstance;
     wc.hIcon         = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     wc.hCursor       = LoadCursorW(nullptr, MAKEINTRESOURCEW(IDC_ARROW));
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(CreateSolidBrush(BG_COLOR));
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(CreateSolidBrush(COL_BG_TOP));
     wc.lpszClassName = L"SimpleDLLInjectorClass";
 
     if (!RegisterClassExW(&wc)) {
@@ -378,9 +664,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     }
 
     HWND hwnd = CreateWindowExW(
-        0, L"SimpleDLLInjectorClass", L"TechInyect",
+        0, L"SimpleDLLInjectorClass", L"TechInyector",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 650, 350,
+        CW_USEDEFAULT, CW_USEDEFAULT, 640, 415,
         nullptr, nullptr, hInstance, nullptr);
     if (!hwnd) {
         ShowErrorMessage(L"CreateWindowExW failed");
