@@ -2,7 +2,7 @@
 
 Inyector de DLLs para Windows con interfaz gráfica Win32 (C++).
 
-![TechInyector](techinyector.png)
+![TechInyector](assets/techinyector.png)
 
 ## ¿Qué es?
 
@@ -14,7 +14,8 @@ TechInyector es una pequeña herramienta que permite **inyectar un archivo `.dll
 - Selección única de proceso a inyectar.
 - Buscador de archivo `.dll` integrado (diálogo de Windows).
 - Inyección manual por API Win32 (`CreateRemoteThread` + `LoadLibraryW`).
-- Interfaz oscura con texto morado.
+- Interfaz oscura con estilo "Gengar / liquid crystal" (púrpura elegante + violeta).
+- Ventana no redimensionable ni maximizable.
 
 ## Uso
 
@@ -36,7 +37,7 @@ TechInyector es una pequeña herramienta que permite **inyectar un archivo `.dll
 
 ```bat
 rc resources.rc
-cl /nologo /EHsc TechInyector.cpp resources.res /Fe:TechInyector.exe user32.lib gdi32.lib comdlg32.lib shell32.lib advapi32.lib
+cl /nologo /EHsc TechInyector.cpp resources.res /Fe:TechInyector.exe user32.lib gdi32.lib comdlg32.lib shell32.lib advapi32.lib gdiplus.lib
 ```
 
 El `rc` debe apuntar a la versión moderna del SDK (p. ej. `....\Windows Kits\10\bin\10.0.26100.0\x64\rc.exe`) para aceptar el icono en formato PNG.
@@ -46,9 +47,13 @@ El `rc` debe apuntar a la versión moderna del SDK (p. ej. `....\Windows Kits\10
 | Archivo | Descripción |
 |---------|-------------|
 | `TechInyector.cpp` | Código fuente principal (Win32). |
-| `techinyector.ico` | Icono del ejecutable. |
+| `assets/` | Carpeta de recursos (iconos e imágenes). |
+| `assets/techinyector.ico` | Icono del ejecutable. |
+| `assets/techinyector.png` | Logo / vista previa. |
+| `assets/image.png` | Imagen adicional mostrada en la GUI. |
 | `resources.rc` | Definición de recursos (enlaza el icono). |
-| `techinyector.png` | Logo / vista previa. |
+| `compilar.bat` | Script para compilar automáticamente. |
+| `.gitignore` | Excluye archivos generados (binarios, objetos). |
 
 ## Autor
 
