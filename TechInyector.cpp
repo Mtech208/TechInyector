@@ -3,6 +3,8 @@
 #include <vector>
 #include <string>
 #include <cmath>
+#include <gdiplus.h>
+using namespace Gdiplus;
 
 // ---------------------------------------------------------------------------
 // Constantes privadas
@@ -21,20 +23,22 @@ constexpr UINT ID_LABEL_TITLE     = 0x3F1; // 1009 - titulo del panel
 constexpr UINT ID_LABEL_PROCS     = 0x3F2; // 1010 - etiqueta "PROCESOS"
 constexpr UINT ID_LABEL_DLL       = 0x3F3; // 1011 - etiqueta "DLL"
 constexpr UINT ID_LABEL_STATUS    = 0x3F4; // 1012 - etiqueta "ESTADO"
+constexpr UINT ID_ICON_TITLE      = 0x3F5; // 1013 - icono del titulo
+constexpr UINT ID_IMAGE_LOGO      = 0x3F6; // 1014 - imagen logo
 
-// Paleta estilo "Gengar / liquid crystal" (purpura oscuro + violeta neon)
-constexpr COLORREF COL_BG_TOP     = RGB(35, 8, 58);     // purpura muy oscuro
-constexpr COLORREF COL_BG_BOTTOM  = RGB(10, 1, 18);     // casi negro
-constexpr COLORREF COL_PANEL      = RGB(58, 18, 96);    // panel purpura translucido
-constexpr COLORREF COL_PANEL_HI   = RGB(105, 40, 165);  // panel hover
-constexpr COLORREF COL_EDGE       = RGB(150, 90, 224);  // borde cristal
-constexpr COLORREF COL_EDGE_HI    = RGB(180, 120, 255); // borde cristal glow
-constexpr COLORREF COL_TEXT_BG    = RGB(18, 5, 30);     // fondo de cajas de texto
-constexpr COLORREF COL_TEXT       = RGB(220, 190, 255); // texto violeta claro
-constexpr COLORREF COL_TEXT_TITLE = RGB(235, 195, 255); // titulo brillante
-constexpr COLORREF COL_ACCENT     = RGB(150, 70, 220);  // acento purpura
-constexpr COLORREF COL_NEON       = RGB(190, 120, 255); // glow neon
-constexpr COLORREF COL_LINE       = RGB(120, 60, 190);  // linea divisoria
+// Paleta estilo "Gengar / liquid crystal" (purpura elegante + violeta refinado)
+constexpr COLORREF COL_BG_TOP     = RGB(30, 10, 61);   // purpura oscuro elegante
+constexpr COLORREF COL_BG_BOTTOM  = RGB(13, 3, 26);    // casi negro
+constexpr COLORREF COL_PANEL      = RGB(45, 25, 85);   // panel purpura
+constexpr COLORREF COL_PANEL_HI   = RGB(60, 40, 115);  // panel hover
+constexpr COLORREF COL_EDGE       = RGB(106, 79, 211); // borde violeta
+constexpr COLORREF COL_EDGE_HI    = RGB(135, 100, 230); // borde violeta hover
+constexpr COLORREF COL_TEXT_BG    = RGB(25, 10, 40);   // fondo de cajas de texto
+constexpr COLORREF COL_TEXT       = RGB(224, 195, 254); // texto violeta claro
+constexpr COLORREF COL_TEXT_TITLE = RGB(240, 210, 255); // titulo brillante
+constexpr COLORREF COL_ACCENT     = RGB(115, 80, 200); // acento purpura
+constexpr COLORREF COL_NEON       = RGB(180, 140, 240); // etiquetas de seccion
+constexpr COLORREF COL_LINE       = RGB(90, 60, 160);   // linea divisoria
 
 // Estado de hover de los botones (para el efecto cristal)
 LRESULT g_hoverBrowse  = 0;
@@ -87,7 +91,7 @@ void PaintGradient(HDC hdc, const RECT& rc, COLORREF top, COLORREF bottom)
 }
 
 // ---------------------------------------------------------------------------
-// Dibuja un panel con esquinas redondeadas relleno.
+// Dibuja un rectangulo redondeado relleno.
 // ---------------------------------------------------------------------------
 void FillRoundRect(HDC hdc, int x, int y, int w, int h, int cx, int cy, COLORREF color)
 {
@@ -99,11 +103,11 @@ void FillRoundRect(HDC hdc, int x, int y, int w, int h, int cx, int cy, COLORREF
 }
 
 // ---------------------------------------------------------------------------
-// Dibuja el borde cristalino de un control redondeado (con brillo).
+// Dibuja el borde redondeado de un control.
 // ---------------------------------------------------------------------------
 void FrameRoundRect(HDC hdc, int x, int y, int w, int h, int cx, int cy, COLORREF edge)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, edge);
+    HPEN pen = CreatePen(PS_SOLID, 1, edge);
     HPEN old = (HPEN)SelectObject(hdc, pen);
     HBRUSH nullbr = (HBRUSH)GetStockObject(NULL_BRUSH);
     HBRUSH oldbr = (HBRUSH)SelectObject(hdc, nullbr);
@@ -118,85 +122,31 @@ void FrameRoundRect(HDC hdc, int x, int y, int w, int h, int cx, int cy, COLORRE
 // ---------------------------------------------------------------------------
 void DrawAccentLine(HDC hdc, int x, int y, int w)
 {
-    HPEN pen = CreatePen(PS_SOLID, 2, COL_LINE);
+    HPEN pen = CreatePen(PS_SOLID, 1, COL_LINE);
     HPEN old = (HPEN)SelectObject(hdc, pen);
     MoveToEx(hdc, x, y, nullptr);
     LineTo(hdc, x + w, y);
     SelectObject(hdc, old);
     DeleteObject(pen);
-
-    // reflejo mas tenue debajo
-    HPEN pen2 = CreatePen(PS_SOLID, 1, RGB(80, 40, 130));
-    SelectObject(hdc, pen2);
-    MoveToEx(hdc, x, y + 3, nullptr);
-    LineTo(hdc, x + w / 2, y + 3);
-    SelectObject(hdc, old);
-    DeleteObject(pen2);
 }
 
 // ---------------------------------------------------------------------------
-// Dibuja un boton con efecto "cristal liquido" (relleno gradiente + glow).
+// Dibuja un boton con efecto "cristal liquido" (relleno gradiente + borde sutil).
 // ---------------------------------------------------------------------------
 void DrawCrystalButton(HDC hdc, const RECT& rc, const wchar_t* text, bool hover)
 {
-    // relleno del boton: gradiente (hover mas claro)
+    // relleno del boton: gradiente suave
     RECT rr = rc;
-    PaintGradient(hdc, rr, hover ? COL_ACCENT : COL_PANEL,
-                  hover ? COL_PANEL_HI : COL_BG_BOTTOM);
-    // halo exterior ténue (efecto glow)
-    FrameRoundRect(hdc, rc.left - 2, rc.top - 2, rc.right - rc.left + 4,
-                   rc.bottom - rc.top + 4, 10, 10,
-                   hover ? RGB(110, 60, 170) : RGB(60, 28, 100));
-    // borde cristal brillante
+    PaintGradient(hdc, rr, hover ? COL_PANEL_HI : COL_PANEL,
+                  hover ? COL_PANEL : COL_BG_BOTTOM);
+    // borde cristal sutil
     FrameRoundRect(hdc, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
-                   8, 8, hover ? COL_EDGE_HI : COL_EDGE);
+                   6, 6, hover ? COL_EDGE_HI : COL_EDGE);
     // texto centrado
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, hover ? RGB(255, 255, 255) : COL_TEXT_TITLE);
     RECT tr = rc;
     DrawTextW(hdc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-}
-
-// ---------------------------------------------------------------------------
-// Subclase: pinta un borde cristalino (purpura) alrededor de un control.
-// ---------------------------------------------------------------------------
-LRESULT CALLBACK CrystalFieldProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    // Guarda el procedimiento original en la pila de la ventana.
-    auto orig = (WNDPROC)GetPropW(hwnd, L"ORIGPROC");
-
-    switch (msg)
-    {
-    case WM_NCPAINT:
-    {
-        LRESULT res = CallWindowProcW(orig, hwnd, msg, wParam, lParam);
-
-        HDC hdc = GetWindowDC(hwnd);
-        RECT wrc;
-        GetWindowRect(hwnd, &wrc);
-        LONG bw = wrc.right - wrc.left;
-        LONG bh = wrc.bottom - wrc.top;
-        RECT f = { 1, 1, bw - 1, bh - 1 };
-        FrameRoundRect(hdc, f.left, f.top, f.right - f.left, f.bottom - f.top, 10, 10, COL_EDGE);
-        ReleaseDC(hwnd, hdc);
-        return res;
-    }
-    case WM_NCDESTROY:
-        RemovePropW(hwnd, L"ORIGPROC");
-        break;
-    }
-    return CallWindowProcW(orig, hwnd, msg, wParam, lParam);
-}
-
-// ---------------------------------------------------------------------------
-// Aplica la subclase cristalina a un control.
-// ---------------------------------------------------------------------------
-void MakeCrystalField(HWND hwnd)
-{
-    if (!hwnd) return;
-    WNDPROC orig = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
-                                              (LONG_PTR)CrystalFieldProc);
-    SetPropW(hwnd, L"ORIGPROC", (HANDLE)orig);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +191,41 @@ LRESULT CALLBACK CrystalButtonProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 }
 
 // ---------------------------------------------------------------------------
+// Subclase para el control de imagen PNG (dibuja con GDI+).
+// ---------------------------------------------------------------------------
+LRESULT CALLBACK ImageControlProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    auto orig = (WNDPROC)GetPropW(hwnd, L"ORIGPROC");
+
+    switch (msg)
+    {
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        Image* pImg = (Image*)GetPropW(hwnd, L"GDIIMAGE");
+        if (pImg && pImg->GetLastStatus() == Ok) {
+            Graphics g(hdc);
+            g.DrawImage(pImg, 0, 0, ps.rcPaint.right, ps.rcPaint.bottom);
+        }
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        {
+            Image* pImg = (Image*)GetPropW(hwnd, L"GDIIMAGE");
+            if (pImg) delete pImg;
+            RemovePropW(hwnd, L"ORIGPROC");
+            RemovePropW(hwnd, L"GDIIMAGE");
+        }
+        break;
+    }
+    return CallWindowProcW(orig, hwnd, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
 // Aplica la subclase de hover a un boton.
 // ---------------------------------------------------------------------------
 void MakeCrystalButton(HWND hwnd, LRESULT* hoverFlag)
@@ -250,6 +235,29 @@ void MakeCrystalButton(HWND hwnd, LRESULT* hoverFlag)
     WNDPROC orig = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
                                               (LONG_PTR)CrystalButtonProc);
     SetPropW(hwnd, L"ORIGPROC", (HANDLE)orig);
+}
+
+// ---------------------------------------------------------------------------
+// Crea un control STATIC para mostrar un PNG con GDI+.
+// ---------------------------------------------------------------------------
+HWND CreatePngStatic(HWND hParent, HINSTANCE hInst, int x, int y, int w, int h, UINT id, const wchar_t* path)
+{
+    HWND hCtrl = CreateWindowExW(
+        0, L"STATIC", nullptr,
+        WS_CHILD | WS_VISIBLE,
+        x, y, w, h, hParent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), hInst, nullptr);
+
+    if (hCtrl) {
+        Image* pImg = Image::FromFile(path);
+        if (pImg && pImg->GetLastStatus() == Ok) {
+            SetPropW(hCtrl, L"GDIIMAGE", (HANDLE)pImg);
+            WNDPROC orig = (WNDPROC)SetWindowLongPtrW(hCtrl, GWLP_WNDPROC,
+                                                      (LONG_PTR)ImageControlProc);
+            SetPropW(hCtrl, L"ORIGPROC", (HANDLE)orig);
+        }
+    }
+    return hCtrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,11 +402,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_hFieldBrush = CreateSolidBrush(COL_TEXT_BG);
         HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hWnd, GWLP_HINSTANCE));
 
-        // Titulo de la app
+        // Icono del titulo (un poco a la izquierda)
+        HWND hIconTitle = CreateWindowExW(
+            0, L"STATIC", nullptr,
+            WS_CHILD | WS_VISIBLE | SS_ICON,
+            25, 15, 24, 24, hWnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_ICON_TITLE)), hInst, nullptr);
+        if (hIconTitle) {
+            HICON hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
+            if (hIcon) {
+                SendMessageW(hIconTitle, STM_SETICON, (WPARAM)hIcon, 0);
+            }
+        }
+
+        // Titulo de la app (mas a la derecha)
         HWND hTitle = CreateWindowExW(
             0, L"STATIC", L"TechInyector",
             WS_CHILD | WS_VISIBLE,
-            14, 12, 220, 30, hWnd,
+            65, 17, 570, 30, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_TITLE)), hInst, nullptr);
         if (hTitle) SendMessageW(hTitle, WM_SETFONT, (WPARAM)g_hTitleFont, TRUE);
 
@@ -406,7 +427,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HWND hProcLabel = CreateWindowExW(
             0, L"STATIC", L"PROCESOS",
             WS_CHILD | WS_VISIBLE,
-            14, 52, 240, 18, hWnd,
+            20, 55, 280, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_PROCS)), hInst, nullptr);
         if (hProcLabel) SendMessageW(hProcLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
@@ -414,17 +435,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_listMain = CreateWindowExW(
             0, L"LISTBOX", nullptr,
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_EXTENDEDSEL | LBS_NOINTEGRALHEIGHT,
-            12, 72, 240, 205, hWnd,
+            20, 78, 280, 220, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LISTBOX_MAIN)), hInst, nullptr);
         if (!g_listMain) ShowErrorMessage(L"CreateWindowExW (ListBox) failed");
         if (g_listMain) SendMessageW(g_listMain, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-        MakeCrystalField(g_listMain);
 
         // Seccion DLL
         HWND hDllLabel = CreateWindowExW(
             0, L"STATIC", L"DLL A INYECTAR",
             WS_CHILD | WS_VISIBLE,
-            262, 52, 250, 18, hWnd,
+            320, 55, 280, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_DLL)), hInst, nullptr);
         if (hDllLabel) SendMessageW(hDllLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
@@ -432,40 +452,42 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_editDll = CreateWindowExW(
             0, L"EDIT", nullptr,
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            262, 72, 360, 30, hWnd,
+            320, 78, 280, 28, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_EDIT_DLLPATH)), hInst, nullptr);
         if (!g_editDll) ShowErrorMessage(L"CreateWindowExW (Edit) failed");
         if (g_editDll) SendMessageW(g_editDll, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-        MakeCrystalField(g_editDll);
 
         // Botones Browse / Inject en la misma fila
         HWND hBrowse = CreateWindowExW(
             0, L"BUTTON", L"Browse DLL",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            262, 112, 176, 34, hWnd,
+            320, 115, 130, 32, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_BROWSE)), hInst, nullptr);
         MakeCrystalButton(hBrowse, &g_hoverBrowse);
 
         HWND hInject = CreateWindowExW(
             0, L"BUTTON", L"Inject",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            446, 112, 176, 34, hWnd,
+            460, 115, 130, 32, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_INJECT)), hInst, nullptr);
         MakeCrystalButton(hInject, &g_hoverInject);
 
         // Boton Refresh debajo
         HWND hRefresh = CreateWindowExW(
-            0, L"BUTTON", L"Refresh Procesos",
+            0, L"BUTTON", L"Refresh",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            262, 156, 360, 34, hWnd,
+            320, 155, 280, 32, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_REFRESH)), hInst, nullptr);
         MakeCrystalButton(hRefresh, &g_hoverRefresh);
+
+        // Imagen logo (centrada abajo de Refresh, 5% menos ancha y mas abajo)
+        CreatePngStatic(hWnd, hInst, 403, 200, 114, 100, ID_IMAGE_LOGO, L"assets/image.png");
 
         // Seccion ESTADO
         HWND hStatusLabel = CreateWindowExW(
             0, L"STATIC", L"ESTADO",
             WS_CHILD | WS_VISIBLE,
-            14, 282, 240, 18, hWnd,
+            20, 310, 280, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_STATUS)), hInst, nullptr);
         if (hStatusLabel) SendMessageW(hStatusLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
@@ -473,15 +495,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_listSmall = CreateWindowExW(
             0, L"LISTBOX", nullptr,
             WS_CHILD | WS_VISIBLE | LBS_NOINTEGRALHEIGHT,
-            12, 302, 610, 46, hWnd,
+            20, 330, 580, 40, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LISTBOX_STATUS)), hInst, nullptr);
-        MakeCrystalField(g_listSmall);
 
         // Pie de pagina
         HWND hMade = CreateWindowExW(
             0, L"STATIC", L"TechInyector  |  Made by Mtech08",
             WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-            12, 352, 610, 18, hWnd,
+            20, 380, 580, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_MADE)), hInst, nullptr);
         if (hMade) SendMessageW(hMade, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
@@ -490,13 +511,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_ERASEBKGND:
     {
-        // Fondo con gradiente tipo liquid crystal.
         HDC hdc = reinterpret_cast<HDC>(wParam);
         RECT rc;
         GetClientRect(hWnd, &rc);
         PaintGradient(hdc, rc, COL_BG_TOP, COL_BG_BOTTOM);
-        // Linea divisoria de acento bajo el titulo.
-        DrawAccentLine(hdc, 14, 44, 606);
+        DrawAccentLine(hdc, 20, 48, 580);
         return 1;
     }
 
@@ -505,13 +524,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HDC hdc = reinterpret_cast<HDC>(wParam);
         UINT id = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
         if (id == ID_LABEL_TITLE) {
-            // Titulo: violeta brillante.
             SetTextColor(hdc, COL_TEXT_TITLE);
         } else if (id == ID_LABEL_PROCS || id == ID_LABEL_DLL || id == ID_LABEL_STATUS) {
-            // Etiquetas de seccion: neon.
             SetTextColor(hdc, COL_NEON);
         } else if (id == ID_LABEL_MADE) {
-            // Pie de pagina: violeta tenue.
             SetTextColor(hdc, RGB(150, 120, 190));
         } else {
             SetTextColor(hdc, COL_TEXT);
@@ -525,8 +541,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HDC hdc = reinterpret_cast<HDC>(wParam);
         SetTextColor(hdc, COL_TEXT);
         SetBkColor(hdc, COL_TEXT_BG);
-        SetBkMode(hdc, TRANSPARENT);
-        return reinterpret_cast<LRESULT>(g_hFieldBrush ? g_hFieldBrush : g_hBgBrush);
+        SetBkMode(hdc, OPAQUE);
+        return reinterpret_cast<LRESULT>(g_hFieldBrush);
     }
 
     case WM_DRAWITEM:
@@ -534,10 +550,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
         if (dis->CtlType == ODT_BUTTON) {
             bool hover = false;
-            UINT id = ID_BTN_BROWSE;
-            if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_BROWSE))      id = ID_BTN_BROWSE, hover = g_hoverBrowse;
-            else if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_INJECT)) id = ID_BTN_INJECT, hover = g_hoverInject;
-            else if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_REFRESH))id = ID_BTN_REFRESH, hover = g_hoverRefresh;
+            if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_BROWSE))      hover = g_hoverBrowse;
+            else if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_INJECT)) hover = g_hoverInject;
+            else if (dis->hwndItem == GetDlgItem(hWnd, ID_BTN_REFRESH)) hover = g_hoverRefresh;
 
             wchar_t label[64];
             GetWindowTextW(dis->hwndItem, label, 64);
@@ -648,6 +663,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+    // Inicializar GDI+
+    GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken;
+    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
+
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(WNDCLASSEXW);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -665,12 +685,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
     HWND hwnd = CreateWindowExW(
         0, L"SimpleDLLInjectorClass", L"TechInyector",
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_DLGFRAME,
         CW_USEDEFAULT, CW_USEDEFAULT, 640, 415,
         nullptr, nullptr, hInstance, nullptr);
     if (!hwnd) {
         ShowErrorMessage(L"CreateWindowExW failed");
         return 1;
+    }
+
+    // Deshabilitar el boton de maximizar y redimensionar
+    HMENU hSysMenu = GetSystemMenu(hwnd, FALSE);
+    if (hSysMenu) {
+        DeleteMenu(hSysMenu, SC_MAXIMIZE, MF_BYCOMMAND);
+        DeleteMenu(hSysMenu, SC_SIZE, MF_BYCOMMAND);
     }
 
     ShowWindow(hwnd, nCmdShow);
@@ -681,6 +708,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
+
+    // Desinicializar GDI+
+    GdiplusShutdown(gdiplusToken);
 
     return static_cast<int>(m.wParam);
 }

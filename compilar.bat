@@ -17,8 +17,6 @@ for %%V in (
   "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
   "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
   "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-  "C:\Program Files\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-  "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 ) do (
   if exist "%%~V" set "VCVARS=%%~V"
 )
@@ -61,8 +59,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/2] Compilando codigo fuente...
-cl /nologo /EHsc TechInyector.cpp resources.res /Fe:TechInyector.exe user32.lib gdi32.lib comdlg32.lib shell32.lib advapi32.lib
+    echo [2/2] Compilando codigo fuente...
+cl /nologo /EHsc TechInyector.cpp resources.res /Fe:TechInyector.exe user32.lib gdi32.lib comdlg32.lib shell32.lib advapi32.lib gdiplus.lib
 if errorlevel 1 (
   echo [ERROR] Fallo la compilacion del codigo fuente.^n
   pause
