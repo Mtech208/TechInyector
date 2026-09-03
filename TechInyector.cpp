@@ -1,10 +1,14 @@
 #include <windows.h>
+#include <commctrl.h>
 #include <commdlg.h>
+#include <psapi.h>
 #include <vector>
 #include <string>
 #include <cmath>
 #include <gdiplus.h>
 using namespace Gdiplus;
+#pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "comctl32.lib")
 
 // ---------------------------------------------------------------------------
 // Constantes privadas
@@ -50,6 +54,7 @@ LRESULT g_hoverRefresh = 0;
 // Una entrada de la lista de procesos: PID + titulo de la ventana.
 struct ProcEntry {
     DWORD        pid;
+    std::wstring exeName;
     std::wstring title;
 };
 
@@ -57,6 +62,7 @@ struct ProcEntry {
 std::vector<ProcEntry> g_procs;      // rellenada por EnumWindows
 HWND   g_hMain     = nullptr;
 HWND   g_listMain  = nullptr;
+HWND   g_listHeader = nullptr;
 HWND   g_listSmall = nullptr;
 HWND   g_editDll   = nullptr;
 HFONT  g_hFont     = nullptr;
@@ -226,6 +232,67 @@ LRESULT CALLBACK ImageControlProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 }
 
 // ---------------------------------------------------------------------------
+// Subclase del header del ListView: fondo negro solido + texto blanco.
+// Garantiza que la cabecera (Proceso/Exe/PID) NUNCA se pinte blanca.
+// ---------------------------------------------------------------------------
+LRESULT CALLBACK HeaderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    auto orig = (WNDPROC)GetPropW(hwnd, L"ORIGPROC");
+
+    switch (msg)
+    {
+    case WM_ERASEBKGND:
+    {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        return 1;
+    }
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+
+        int count = static_cast<int>(SendMessageW(hwnd, HDM_GETITEMCOUNT, 0, 0));
+        HFONT hFont = static_cast<HFONT>(GetPropW(hwnd, L"HFONT"));
+        HFONT old = static_cast<HFONT>(SelectObject(hdc, hFont ? hFont : GetStockObject(DEFAULT_GUI_FONT)));
+        SetTextColor(hdc, RGB(255, 255, 255));
+        SetBkMode(hdc, TRANSPARENT);
+
+        for (int i = 0; i < count; i++) {
+            RECT ir;
+            SendMessageW(hwnd, HDM_GETITEMRECT, i, reinterpret_cast<LPARAM>(&ir));
+            wchar_t buf[128];
+            HDITEMW hdi{};
+            hdi.mask     = HDI_TEXT;
+            hdi.pszText  = buf;
+            hdi.cchTextMax = 128;
+            if (SendMessageW(hwnd, HDM_GETITEMW, i, reinterpret_cast<LPARAM>(&hdi))) {
+                RECT tr = ir;
+                tr.left += 6;
+                tr.right -= 6;
+                DrawTextW(hdc, buf, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+
+        SelectObject(hdc, old);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        RemovePropW(hwnd, L"ORIGPROC");
+        RemovePropW(hwnd, L"HFONT");
+        break;
+    }
+    return CallWindowProcW(orig, hwnd, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
 // Aplica la subclase de hover a un boton.
 // ---------------------------------------------------------------------------
 void MakeCrystalButton(HWND hwnd, LRESULT* hoverFlag)
@@ -304,7 +371,19 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     wchar_t title[0x104];
     GetWindowTextW(hwnd, title, 0x104);
 
-    procs->push_back(ProcEntry{ pid, std::wstring(title) });
+    std::wstring exeName;
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (hProc) {
+        wchar_t exePath[MAX_PATH];
+        DWORD size = MAX_PATH;
+        if (QueryFullProcessImageNameW(hProc, 0, exePath, &size)) {
+            wchar_t* slash = wcsrchr(exePath, L'\\');
+            exeName = slash ? slash + 1 : exePath;
+        }
+        CloseHandle(hProc);
+    }
+
+    procs->push_back(ProcEntry{ pid, exeName, std::wstring(title) });
     return TRUE;
 }
 
@@ -376,6 +455,42 @@ bool InjectDll(DWORD pid, const char* dllPath)
 }
 
 // ---------------------------------------------------------------------------
+// Enumera de nuevo las ventanas y refresca el ListView de procesos.
+// ---------------------------------------------------------------------------
+void RefreshProcessList()
+{
+    if (!g_listMain) return;
+
+    SendMessageW(g_listMain, LVM_DELETEALLITEMS, 0, 0);
+    g_procs.clear();
+    EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&g_procs));
+
+    for (std::size_t i = 0; i < g_procs.size(); i++) {
+        LVITEMW it{};
+        it.mask    = LVIF_TEXT | LVIF_PARAM;
+        it.iItem   = static_cast<int>(i);
+        it.iSubItem = 0;
+        it.pszText = const_cast<LPWSTR>(g_procs[i].title.c_str());
+        it.lParam  = g_procs[i].pid;
+        LRESULT idx = SendMessageW(g_listMain, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&it));
+
+        if (!g_procs[i].exeName.empty()) {
+            it.mask = LVIF_TEXT;
+            it.iSubItem = 1;
+            it.pszText = const_cast<LPWSTR>(g_procs[i].exeName.c_str());
+            SendMessageW(g_listMain, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&it));
+        }
+
+        std::wstring pidStr = std::to_wstring(g_procs[i].pid);
+        it.mask = LVIF_TEXT;
+        it.iSubItem = 2;
+        it.pszText = const_cast<LPWSTR>(pidStr.c_str());
+        SendMessageW(g_listMain, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&it));
+        (void)idx;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Procedimiento de ventana
 // ---------------------------------------------------------------------------
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -419,7 +534,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HWND hTitle = CreateWindowExW(
             0, L"STATIC", L"TechInyector",
             WS_CHILD | WS_VISIBLE,
-            65, 17, 570, 30, hWnd,
+            65, 17, 615, 30, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_TITLE)), hInst, nullptr);
         if (hTitle) SendMessageW(hTitle, WM_SETFONT, (WPARAM)g_hTitleFont, TRUE);
 
@@ -427,24 +542,49 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HWND hProcLabel = CreateWindowExW(
             0, L"STATIC", L"PROCESOS",
             WS_CHILD | WS_VISIBLE,
-            20, 55, 280, 18, hWnd,
+            20, 55, 390, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_PROCS)), hInst, nullptr);
         if (hProcLabel) SendMessageW(hProcLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
-        // Lista de procesos
+        // Lista de procesos (ListView con columnas)
         g_listMain = CreateWindowExW(
-            0, L"LISTBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_EXTENDEDSEL | LBS_NOINTEGRALHEIGHT,
-            20, 78, 280, 220, hWnd,
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            20, 78, 390, 190, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LISTBOX_MAIN)), hInst, nullptr);
-        if (!g_listMain) ShowErrorMessage(L"CreateWindowExW (ListBox) failed");
-        if (g_listMain) SendMessageW(g_listMain, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+        if (!g_listMain) ShowErrorMessage(L"CreateWindowExW (ListView) failed");
+
+        if (g_listMain) {
+            SendMessageW(g_listMain, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+
+            SendMessageW(g_listMain, LVM_SETBKCOLOR, 0, (LPARAM)RGB(0, 0, 0));
+            SendMessageW(g_listMain, LVM_SETTEXTBKCOLOR, 0, (LPARAM)RGB(0, 0, 0));
+            SendMessageW(g_listMain, LVM_SETTEXTCOLOR, 0, (LPARAM)RGB(255, 255, 255));
+            g_listHeader = reinterpret_cast<HWND>(SendMessageW(g_listMain, LVM_GETHEADER, 0, 0));
+            if (g_listHeader) {
+                SetPropW(g_listHeader, L"HFONT", (HANDLE)g_hFont);
+                WNDPROC origHdr = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+                    g_listHeader, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(HeaderProc)));
+                SetPropW(g_listHeader, L"ORIGPROC", (HANDLE)origHdr);
+                InvalidateRect(g_listHeader, nullptr, TRUE);
+            }
+            LVCOLUMNW col{};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+            col.fmt  = LVCFMT_LEFT;
+
+            col.cx = 200; col.iSubItem = 0; col.pszText = const_cast<LPWSTR>(L"Proceso");
+            SendMessageW(g_listMain, LVM_INSERTCOLUMNW, 0, reinterpret_cast<LPARAM>(&col));
+            col.cx = 130; col.iSubItem = 1; col.pszText = const_cast<LPWSTR>(L"Exe");
+            SendMessageW(g_listMain, LVM_INSERTCOLUMNW, 1, reinterpret_cast<LPARAM>(&col));
+            col.cx = 60;  col.iSubItem = 2; col.pszText = const_cast<LPWSTR>(L"PID");
+            SendMessageW(g_listMain, LVM_INSERTCOLUMNW, 2, reinterpret_cast<LPARAM>(&col));
+        }
 
         // Seccion DLL
         HWND hDllLabel = CreateWindowExW(
             0, L"STATIC", L"DLL A INYECTAR",
             WS_CHILD | WS_VISIBLE,
-            320, 55, 280, 18, hWnd,
+            425, 55, 260, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_DLL)), hInst, nullptr);
         if (hDllLabel) SendMessageW(hDllLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
@@ -452,7 +592,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_editDll = CreateWindowExW(
             0, L"EDIT", nullptr,
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            320, 78, 280, 28, hWnd,
+            425, 78, 260, 28, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_EDIT_DLLPATH)), hInst, nullptr);
         if (!g_editDll) ShowErrorMessage(L"CreateWindowExW (Edit) failed");
         if (g_editDll) SendMessageW(g_editDll, WM_SETFONT, (WPARAM)g_hFont, TRUE);
@@ -461,14 +601,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HWND hBrowse = CreateWindowExW(
             0, L"BUTTON", L"Browse DLL",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            320, 115, 130, 32, hWnd,
+            425, 115, 120, 32, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_BROWSE)), hInst, nullptr);
         MakeCrystalButton(hBrowse, &g_hoverBrowse);
 
         HWND hInject = CreateWindowExW(
             0, L"BUTTON", L"Inject",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            460, 115, 130, 32, hWnd,
+            550, 115, 135, 32, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_INJECT)), hInst, nullptr);
         MakeCrystalButton(hInject, &g_hoverInject);
 
@@ -476,18 +616,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HWND hRefresh = CreateWindowExW(
             0, L"BUTTON", L"Refresh",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            320, 155, 280, 32, hWnd,
+            425, 155, 260, 32, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BTN_REFRESH)), hInst, nullptr);
         MakeCrystalButton(hRefresh, &g_hoverRefresh);
 
-        // Imagen logo (centrada abajo de Refresh, 5% menos ancha y mas abajo)
-        CreatePngStatic(hWnd, hInst, 403, 200, 114, 100, ID_IMAGE_LOGO, L"assets/image.png");
+        // Imagen logo (centrada debajo de Refresh)
+        CreatePngStatic(hWnd, hInst, 498, 200, 114, 100, ID_IMAGE_LOGO, L"assets/image.png");
 
         // Seccion ESTADO
         HWND hStatusLabel = CreateWindowExW(
             0, L"STATIC", L"ESTADO",
             WS_CHILD | WS_VISIBLE,
-            20, 310, 280, 18, hWnd,
+            20, 285, 390, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_STATUS)), hInst, nullptr);
         if (hStatusLabel) SendMessageW(hStatusLabel, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
 
@@ -495,16 +635,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_listSmall = CreateWindowExW(
             0, L"LISTBOX", nullptr,
             WS_CHILD | WS_VISIBLE | LBS_NOINTEGRALHEIGHT,
-            20, 330, 580, 40, hWnd,
+            20, 305, 660, 40, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LISTBOX_STATUS)), hInst, nullptr);
 
         // Pie de pagina
         HWND hMade = CreateWindowExW(
             0, L"STATIC", L"TechInyector  |  Made by Mtech08",
             WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-            20, 380, 580, 18, hWnd,
+            20, 355, 660, 18, hWnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_LABEL_MADE)), hInst, nullptr);
         if (hMade) SendMessageW(hMade, WM_SETFONT, (WPARAM)g_hSectionFont, TRUE);
+
+        // Cargar los procesos automaticamente al abrir
+        RefreshProcessList();
 
         return 0;
     }
@@ -515,7 +658,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         RECT rc;
         GetClientRect(hWnd, &rc);
         PaintGradient(hdc, rc, COL_BG_TOP, COL_BG_BOTTOM);
-        DrawAccentLine(hdc, 20, 48, 580);
+        DrawAccentLine(hdc, 20, 48, 660);
         return 1;
     }
 
@@ -545,6 +688,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return reinterpret_cast<LRESULT>(g_hFieldBrush);
     }
 
+    case WM_NOTIFY:
+    {
+        LPNMHDR nm = reinterpret_cast<LPNMHDR>(lParam);
+        if (nm->code == NM_CUSTOMDRAW) {
+            LPNMLVCUSTOMDRAW cd = reinterpret_cast<LPNMLVCUSTOMDRAW>(lParam);
+            if (nm->hwndFrom == g_listMain) {
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+                    return CDRF_NOTIFYITEMDRAW;
+                } else if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    cd->clrTextBk = COL_TEXT_BG;
+                    cd->clrText   = COL_TEXT;
+                    if ((cd->nmcd.uItemState & CDIS_SELECTED)) {
+                        cd->clrTextBk = COL_PANEL_HI;
+                        cd->clrText   = RGB(255, 255, 255);
+                    }
+                    return CDRF_NEWFONT;
+                }
+            }
+        }
+        break;
+    }
+
     case WM_DRAWITEM:
     {
         DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
@@ -567,19 +732,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         WORD id = LOWORD(wParam);
         WORD code = HIWORD(wParam);
 
-        if (id == ID_LISTBOX_MAIN && code == LBN_SELCHANGE) {
-            const int count = static_cast<int>(SendMessageW(g_listMain, LB_GETCOUNT, 0, 0));
-            int selCount = static_cast<int>(SendMessageW(g_listMain, LB_GETSELCOUNT, 0, 0));
-            if (selCount > 0 && selCount < count) {
-                int caret = static_cast<int>(SendMessageW(g_listMain, LB_GETCARETINDEX, 0, 0));
-                if (caret != LB_ERR && caret < count) {
-                    for (int i = 0; i < count; i++)
-                        SendMessageW(g_listMain, LB_SETSEL, i == caret ? TRUE : FALSE, i);
-                }
-            }
-            return 0;
-        }
-
         switch (id)
         {
         case ID_BTN_BROWSE:
@@ -600,45 +752,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         case ID_BTN_INJECT:
         {
-            LRESULT sel = SendMessageW(g_listMain, LB_GETCARETINDEX, 0, 0);
-            if (sel == LB_ERR || sel < 0) {
+            int sel = static_cast<int>(SendMessageW(g_listMain, LVM_GETNEXTITEM, -1, LVNI_SELECTED));
+            if (sel == -1) {
                 MessageBoxW(hWnd, L"Selecciona una aplicacion.", L"Aviso", MB_ICONWARNING);
                 return 0;
             }
-            DWORD pid = static_cast<DWORD>(SendMessageW(g_listMain, LB_GETITEMDATA, sel, 0));
-            if (pid == 0) {
-                MessageBoxW(hWnd, L"Selecciona una aplicacion.", L"Aviso", MB_ICONWARNING);
-                return 0;
-            }
+            LVITEMW it{};
+            it.mask = LVIF_PARAM;
+            it.iItem = sel;
+            it.iSubItem = 0;
+            if (SendMessageW(g_listMain, LVM_GETITEMW, 0, reinterpret_cast<LPARAM>(&it))) {
+                DWORD pid = static_cast<DWORD>(it.lParam);
+                if (pid == 0) {
+                    MessageBoxW(hWnd, L"Selecciona una aplicacion.", L"Aviso", MB_ICONWARNING);
+                    return 0;
+                }
 
-            wchar_t dllPath[0x104];
-            GetWindowTextW(g_editDll, dllPath, 0x104);
-            if (dllPath[0] == L'\0') {
-                MessageBoxW(hWnd, L"Selecciona un archivo DLL.", L"Aviso", MB_ICONWARNING);
-                return 0;
-            }
+                wchar_t dllPath[0x104];
+                GetWindowTextW(g_editDll, dllPath, 0x104);
+                if (dllPath[0] == L'\0') {
+                    MessageBoxW(hWnd, L"Selecciona un archivo DLL.", L"Aviso", MB_ICONWARNING);
+                    return 0;
+                }
 
-            char bufN[0x104];
-            WideCharToMultiByte(CP_ACP, 0, dllPath, -1, bufN, 0x104, nullptr, nullptr);
-            if (InjectDll(pid, bufN)) {
-                SendMessageW(g_listSmall, LB_ADDSTRING, 0, (LPARAM)L"Inyeccion realizada con exito.");
-            } else {
-                SendMessageW(g_listSmall, LB_ADDSTRING, 0, (LPARAM)L"La inyeccion fallo. Revisa permisos y ruta.");
+                char bufN[0x104];
+                WideCharToMultiByte(CP_ACP, 0, dllPath, -1, bufN, 0x104, nullptr, nullptr);
+                if (InjectDll(pid, bufN)) {
+                    SendMessageW(g_listSmall, LB_ADDSTRING, 0, (LPARAM)L"Inyeccion realizada con exito.");
+                } else {
+                    SendMessageW(g_listSmall, LB_ADDSTRING, 0, (LPARAM)L"La inyeccion fallo. Revisa permisos y ruta.");
+                }
             }
             return 0;
         }
 
         case ID_BTN_REFRESH:
         {
-            SendMessageW(g_listMain, LB_RESETCONTENT, 0, 0);
-            g_procs.clear();
-            EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&g_procs));
-
-            for (std::size_t i = 0; i < g_procs.size(); i++) {
-                LRESULT idx = SendMessageW(g_listMain, LB_ADDSTRING, 0,
-                                           reinterpret_cast<LPARAM>(g_procs[i].title.c_str()));
-                SendMessageW(g_listMain, LB_SETITEMDATA, idx, g_procs[i].pid);
-            }
+            RefreshProcessList();
             return 0;
         }
         }
@@ -663,6 +813,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+    // Inicializar controles comunes (ListView, etc.)
+    INITCOMMONCONTROLSEX icc{};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC  = ICC_LISTVIEW_CLASSES;
+    InitCommonControlsEx(&icc);
+
     // Inicializar GDI+
     GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken;
@@ -686,7 +842,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     HWND hwnd = CreateWindowExW(
         0, L"SimpleDLLInjectorClass", L"TechInyector",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_DLGFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 640, 415,
+        CW_USEDEFAULT, CW_USEDEFAULT, 720, 450,
         nullptr, nullptr, hInstance, nullptr);
     if (!hwnd) {
         ShowErrorMessage(L"CreateWindowExW failed");

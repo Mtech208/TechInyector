@@ -60,7 +60,7 @@ if errorlevel 1 (
 )
 
     echo [2/2] Compilando codigo fuente...
-cl /nologo /EHsc TechInyector.cpp resources.res /Fe:TechInyector.exe user32.lib gdi32.lib comdlg32.lib shell32.lib advapi32.lib gdiplus.lib
+cl /nologo /EHsc TechInyector.cpp resources.res /Fe:TechInyector.exe user32.lib gdi32.lib comdlg32.lib shell32.lib advapi32.lib gdiplus.lib psapi.lib
 if errorlevel 1 (
   echo [ERROR] Fallo la compilacion del codigo fuente.^n
   pause
